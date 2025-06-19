@@ -1,0 +1,22 @@
+We want to get the experiment results 
+
+So we build it from scratch (the rnn)
+
+First we need to learn about the input sequence and filter bank spectra features 
+autovc -> this paper -> filter bank spectra
+
+
+Amplitude	: Instantaneous loudness	Low-level (not enough to understand speech)
+Energy	: Intensity over time (e.g., syllable boundaries)	Some info (helps with silence vs speech)
+Frequency : Pitch, formants, harmonics	⭐ Core info for phonemes, words, emotion
+
+
+->so frequency is the key to understand what the spaeker spoke
+
+
+we want to model P(y|x) as contidiontal probabilty of y given x,out puts produced till that token .(eq 1 in section 3 of Listen,Attend and spell.pdf)
+
+
+Now reading the LSTM and BLSTM
+
+using the time machine dataset in d2l for learning lstm
