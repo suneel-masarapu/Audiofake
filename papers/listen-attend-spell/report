@@ -20,3 +20,14 @@ we want to model P(y|x) as contidiontal probabilty of y given x,out puts produce
 Now reading the LSTM and BLSTM
 
 using the time machine dataset in d2l for learning lstm
+
+
+Maybe i first have to develop part by part 
+
+how about i fist go with the speller  ?
+
+SPELLER : 
+
+    speller > 1)2 LSTM cells 
+            2)attention block  
+    
