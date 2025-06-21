@@ -69,15 +69,14 @@ class decoder(nn.Module) :
         B, T, C = input.shape
 
         if attn is None:
-            attn = torch.zeros(B, self.outdim // 2, device=input.device)   #(B, output_dim // 2)
+            attn = torch.zeros(B, self.outdim // 2, device=input.device)  # (B, output_dim // 2)
 
         logits_all = []
         loss = 0
         criterion = nn.CrossEntropyLoss()
 
-        # Make sure prev_output is a tensor
         if isinstance(prev_output, int):
-            prev_output = torch.full((B,), prev_output, dtype=torch.long, device=input.device) #(B,)
+            prev_output = torch.full((B,), prev_output, dtype=torch.long, device=input.device)
         else:
             prev_output = prev_output.to(input.device)
 
@@ -85,25 +84,27 @@ class decoder(nn.Module) :
             pout = self.embd(prev_output)  # (B, output_dim // 2)
             ci = torch.cat([pout, attn], dim=-1)  # (B, output_dim)
 
-            h1, c1, h2, c2 = self.rnn(ci, h1, c1, h2, c2) # (B, output_dim), (B, output_dim), (B, output_dim), (B, output_dim)
-            #print('input shape:', input.shape, 'h2 shape:', h2.shape, 'attn shape:', attn.shape)
+            h1, c1, h2, c2 = self.rnn(ci, h1, c1, h2, c2)  # (B, output_dim)
             attn = self.attention(input, h2)
 
             logits = self.mlp(h2)  # (B, vocab_size)
             logits_all.append(logits)
 
-            probs = torch.softmax(logits, dim=-1)
-            prev_output = torch.multinomial(probs, num_samples=1).squeeze(1)  # shape (B,)
-
             if target is not None:
                 loss += criterion(logits, target[:, t])
+                prev_output = target[:, t]  # <--- Teacher forcing here
+            else:
+                probs = torch.softmax(logits, dim=-1)
+                prev_output = torch.argmax(probs, dim=-1)  # Greedy decoding
 
         logits_all = torch.stack(logits_all, dim=1)  # (B, T, vocab_size)
 
         if target is not None:
+            loss = loss / T  # Average loss over time steps
             return logits_all, loss
         else:
             return logits_all
+
         
 
     def generate(self, input, max_len=100, print_live=True):
@@ -137,7 +138,7 @@ class decoder(nn.Module) :
 
             logits = self.mlp(h2)
             probs = torch.softmax(logits, dim=-1)
-            prev_output = torch.multinomial(probs, num_samples=1).squeeze(1)  # (B,)
+            prev_output = torch.argmax(probs, dim=-1)  # <-- Greedy decoding
 
             token_id = prev_output.item()
             all_outputs.append(token_id)
