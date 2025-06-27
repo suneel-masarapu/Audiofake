@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import decoder.LstmCell as lstmCell
+from models.decoder import LSTMCell as lstmCell
 
 
 
@@ -12,8 +12,8 @@ class pBLSTMlayer(nn.Module):  # FIXED
         super().__init__()
         self.indim = input_dim
         self.outdim = output_dim
-        self.lstmf = lstmCell.LSTMCell(input_dim, output_dim // 4)
-        self.lstmb = lstmCell.LSTMCell(input_dim, output_dim // 4)
+        self.lstmf = lstmCell(input_dim, output_dim // 2)
+        self.lstmb = lstmCell(input_dim, output_dim // 2)
 
     def forward(self, input):
         hf = cf = hb = cb = None
@@ -31,20 +31,38 @@ class pBLSTMlayer(nn.Module):  # FIXED
 
     def merge_neighbours(self, input):
         B, T, C = input.shape
-        assert T % 2 == 0, "Time length must be even to merge neighbors"
+        is_odd = T % 2 == 1
+
+        if is_odd:
+            # Repeat the last frame to make T even
+            last_frame = input[:, -1:, :]  # shape (B, 1, C)
+            input = torch.cat([input, last_frame], dim=1)
+            T += 1  # Now T is even
+
         output = torch.zeros((B, T // 2, C * 2), device=input.device)
         for t in range(T // 2):
             output[:, t, :] = torch.cat((input[:, 2 * t, :], input[:, 2 * t + 1, :]), dim=-1)
+
         return output
 
 
-class encoder(nn.Module):
+
+class Encoder(nn.Module):
     def __init__(self, input_dim, output_dim, num_layers=3):
         super().__init__()
         self.indim = input_dim
         self.outdim = output_dim
         self.num_layers = num_layers
-        self.layers = nn.ModuleList([pBLSTMlayer(input_dim, output_dim) for _ in range(num_layers)])
+
+        layers = []
+        current_input_dim = input_dim
+        for i in range(num_layers):
+            layer = pBLSTMlayer(current_input_dim, output_dim)
+            layers.append(layer)
+            # After merge_neighbours, feature dim becomes 2 * output_dim
+            current_input_dim = output_dim * 2
+
+        self.layers = nn.ModuleList(layers)
 
     def forward(self, input):
         output = input

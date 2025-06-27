@@ -19,6 +19,7 @@ class LSTMCell(nn.Module) :
     
     def forward(self,input,hidden_state=None,cell_state=None) :
         B,_ = input.shape
+       # print('input shape:', input.shape)
         if hidden_state is None or cell_state is None:
             hidden_state = input.new_zeros(B, self.outdim)
             cell_state = input.new_zeros(B, self.outdim)
@@ -49,12 +50,13 @@ class StackedLSTMcell(nn.Module) :
 
 
 
-class decoder(nn.Module) :
+class Decoder(nn.Module) :
     def __init__(self,input_dim,output_dim,vocab_size) :
         super().__init__()
         self.indim = input_dim
         self.outdim = output_dim 
-        self.embd = nn.Embedding(vocab_size,output_dim // 2)
+        self.vocab_size = vocab_size
+        self.embd = nn.Embedding(vocab_size+2,output_dim // 2)
         self.attention = attention.Attention(output_dim,output_dim // 2)
         print('output_dim:', output_dim, 'vocab_size:', vocab_size)
         self.rnn = StackedLSTMcell((output_dim // 2) * 2,output_dim)
@@ -65,47 +67,62 @@ class decoder(nn.Module) :
             nn.Linear(vocab_size * 2, vocab_size)
         )
 
-    def forward(self, input, prev_output=0, h1=None, c1=None, h2=None, c2=None, attn=None, target=None):
-        B, T, C = input.shape
+    def forward(self, input, prev_output=0, h1=None, c1=None, h2=None, c2=None,
+                attn=None, target=None, pad_length=64):
+        """
+        input: (B, T_enc, C) - encoder output
+        prev_output: int or (B,) tensor - initial decoder input token(s)
+        target: (B, T_tgt) - target token ids (padded with PAD_ID)
+        pad_length: int - max number of decoder steps
+        """
+        B, T_enc, _ = input.shape
 
         if attn is None:
-            attn = torch.zeros(B, self.outdim // 2, device=input.device)  # (B, output_dim // 2)
+            attn = torch.zeros(B, self.outdim // 2, device=input.device)
 
         logits_all = []
-        loss = 0
-        criterion = nn.CrossEntropyLoss()
+        loss = 0.0
 
+        # Define pad id dynamically
+        PAD_ID = self.vocab_size + 1
+        criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID)
+
+        # Prepare initial decoder input
         if isinstance(prev_output, int):
             prev_output = torch.full((B,), prev_output, dtype=torch.long, device=input.device)
         else:
             prev_output = prev_output.to(input.device)
 
-        for t in range(T):
-            pout = self.embd(prev_output)  # (B, output_dim // 2)
-            ci = torch.cat([pout, attn], dim=-1)  # (B, output_dim)
+        # Decide number of decoding steps
+        if target is not None:
+            T_dec = min(target.shape[1], pad_length)
 
-            h1, c1, h2, c2 = self.rnn(ci, h1, c1, h2, c2)  # (B, output_dim)
-            attn = self.attention(input, h2)
+        for t in range(T_dec):
+            pout = self.embd(prev_output)          # (B, D/2)
+            ci = torch.cat([pout, attn], dim=-1)   # (B, D)
 
-            logits = self.mlp(h2)  # (B, vocab_size)
+            h1, c1, h2, c2 = self.rnn(ci, h1, c1, h2, c2)  # RNN step
+            attn = self.attention(input, h2)              # Attention step
+
+            logits = self.mlp(h2)                         # (B, vocab_size)
             logits_all.append(logits)
 
             if target is not None:
-                loss += criterion(logits, target[:, t])
-                prev_output = target[:, t]  # <--- Teacher forcing here
+                # If sequence is shorter than pad_length, fill with PAD_ID
+                current_target = target[:, t] if t < target.size(1) else torch.full((B,), PAD_ID, device=input.device)
+                loss += criterion(logits, current_target)
+                prev_output = current_target  # Teacher forcing
             else:
                 probs = torch.softmax(logits, dim=-1)
-                prev_output = torch.argmax(probs, dim=-1)  # Greedy decoding
+                prev_output = torch.argmax(probs, dim=-1)
 
-        logits_all = torch.stack(logits_all, dim=1)  # (B, T, vocab_size)
+        logits_all = torch.stack(logits_all, dim=1)  # (B, T_dec, vocab_size)
 
         if target is not None:
-            loss = loss / T  # Average loss over time steps
+            loss = loss / T_dec
             return logits_all, loss
         else:
             return logits_all
-
-        
 
     def generate(self, input, max_len=100, print_live=True):
         """
