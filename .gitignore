@@ -13,3 +13,4 @@ venv.bak/
 .vscode/
 *.sublime-workspace
 *.sublime-project
+papers/listen-attend-spell/experiment/data/speechocean_logmel.pkl
