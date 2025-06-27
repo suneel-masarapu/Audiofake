@@ -3,6 +3,7 @@ import torch.nn as nn
 import models.attention as attention
 import utils.utils as utils
 
+"""
 class LSTMCell(nn.Module) :
     def __init__(self,input_dim,output_dim) :
         super().__init__()
@@ -69,12 +70,13 @@ class Decoder(nn.Module) :
 
     def forward(self, input, prev_output=0, h1=None, c1=None, h2=None, c2=None,
                 attn=None, target=None, pad_length=64):
-        """
+    """ """
         input: (B, T_enc, C) - encoder output
         prev_output: int or (B,) tensor - initial decoder input token(s)
         target: (B, T_tgt) - target token ids (padded with PAD_ID)
         pad_length: int - max number of decoder steps
-        """
+        
+        """"""
         B, T_enc, _ = input.shape
 
         if attn is None:
@@ -125,7 +127,7 @@ class Decoder(nn.Module) :
             return logits_all
 
     def generate(self, input, max_len=100, print_live=True):
-        """
+        """"""
         Generate text from encoder output with live character printing.
 
         Args:
@@ -136,7 +138,7 @@ class Decoder(nn.Module) :
         Returns:
             decoded_strings (List[str])
             output_tensor (Tensor): (B, max_len)
-        """
+        """"""
         B = input.size(0)
         assert B == 1, "Live printing only supported for batch size 1"
         device = input.device
@@ -173,10 +175,133 @@ class Decoder(nn.Module) :
         decoded = utils.decode(all_outputs)
         return [decoded], torch.tensor(all_outputs).unsqueeze(0)
 
-            
+"""
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import random
 
+class Decoder(nn.Module):
+    def __init__(self, input_dim, hidden_dim, vocab_size, dropout=0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.vocab_size = vocab_size
+        self.dropout_p = dropout
 
+        self.embd = nn.Embedding(vocab_size + 2, hidden_dim // 2)
+        self.dropout = nn.Dropout(dropout)
 
+        self.attention = attention.Attention(hidden_dim, hidden_dim // 2)
 
+        self.rnn = nn.LSTM(input_size=(hidden_dim // 2) * 2,
+                           hidden_size=hidden_dim,
+                           num_layers=2,
+                           batch_first=True,
+                           dropout=dropout)
 
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim, vocab_size * 2),
+            nn.LayerNorm(vocab_size * 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(vocab_size * 2, vocab_size)
+        )
+
+    def forward(self, input, prev_output=0, hidden=None, attn=None, target=None, pad_length=64):
+        B, T_enc, _ = input.shape
+
+        if attn is None:
+            attn = torch.zeros(B, self.hidden_dim // 2, device=input.device)
+
+        PAD_ID = self.vocab_size + 1
+        criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID)
+        logits_all = []
+        loss = 0.0
+
+        if isinstance(prev_output, int):
+            prev_output = torch.full((B,), prev_output, dtype=torch.long, device=input.device)
+
+        T_dec = min(target.shape[1], pad_length) if target is not None else pad_length
+
+        h = torch.zeros(2, B, self.hidden_dim, device=input.device)
+        c = torch.zeros(2, B, self.hidden_dim, device=input.device)
+        hidden = (h, c)
+
+        for t in range(T_dec):
+            pout = self.embd(prev_output)
+            pout = self.dropout(pout)
+
+            ci = torch.cat([pout, attn], dim=-1).unsqueeze(1)
+            output, hidden = self.rnn(ci, hidden)
+            h2 = output.squeeze(1)
+            h2 = self.dropout(h2)
+
+            attn = self.attention(input, h2)
+            logits = self.mlp(h2)
+            logits_all.append(logits)
+
+            if target is not None:
+                current_target = target[:, t] if t < target.size(1) else torch.full((B,), PAD_ID, device=input.device)
+                if not (current_target == PAD_ID).all():
+                    loss += criterion(logits, current_target)   
+
+                # Use teacher forcing 90% of the time
+                use_teacher = random.random() < 0.9
+                if use_teacher:
+                    prev_output = current_target
+                else:
+                    probs = F.softmax(logits, dim=-1)
+                    prev_output = torch.multinomial(probs, num_samples=1).squeeze(-1)
+            else:
+                probs = F.softmax(logits, dim=-1)
+                prev_output = torch.argmax(probs, dim=-1)
+
+        logits_all = torch.stack(logits_all, dim=1)
+
+        if target is not None:
+            loss = loss / T_dec
+            return logits_all, loss
+        else:
+            return logits_all
+
+    def generate(self, input, max_len=100, print_live=True):
+        B = input.size(0)
+        assert B == 1, "Live printing only supported for batch size 1"
+        device = input.device
+
+        h = torch.zeros(2, B, self.hidden_dim, device=device)
+        c = torch.zeros(2, B, self.hidden_dim, device=device)
+        hidden = (h, c)
+
+        attn = torch.zeros(B, self.hidden_dim // 2, device=device)
+        prev_output = torch.full((B,), utils.SOS_ID, dtype=torch.long, device=device)
+
+        all_outputs = []
+
+        for _ in range(max_len):
+            pout = self.embd(prev_output)
+            ci = torch.cat([pout, attn], dim=-1).unsqueeze(1)
+            output, hidden = self.rnn(ci, hidden)
+            h2 = output.squeeze(1)
+            attn = self.attention(input, h2)
+            logits = self.mlp(h2)
+            probs = torch.softmax(logits, dim=-1)
+            prev_output = torch.argmax(probs, dim=-1)
+
+            token_id = prev_output.item()
+            all_outputs.append(token_id)
+
+            if print_live:
+                if token_id == utils.EOS_ID:
+                    break
+                ch = utils.idx2phone.get(token_id, '?')
+                print(ch, end='', flush=True)
+
+            if token_id == utils.EOS_ID:
+                break
+
+        print()
+        decoded = utils.decode(all_outputs)
+        return [decoded], torch.tensor(all_outputs).unsqueeze(0)
